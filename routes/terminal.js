@@ -28,20 +28,44 @@ router.post("/activate/:agent", async (req, res) => {
                 });
             }
             
-            // open 명령어로 새 터미널 창 열기 (더 간단한 방법)
-            const command = `open -a iTerm2 -n --args -e "tmux attach -t ${sessionName}"`;
+            // 기본 터미널 앱으로 tmux 세션 열기
+            // AppleScript를 사용하여 Terminal.app에서 명령 실행
+            const appleScript = `
+                tell application "Terminal"
+                    activate
+                    do script "tmux attach -t ${sessionName}"
+                end tell
+            `;
             
-            console.log("Executing command for terminal activation:", command);
+            const command = `osascript -e '${appleScript.trim().replace(/'/g, "'\"'\"'")}'`;
+            
+            console.log("Executing command for terminal activation");
         
             exec(command, (error2, stdout, stderr) => {
                 if (error2) {
                     console.error("터미널 활성화 실패:", error2);
                     console.error("stderr:", stderr);
-                    return res.status(500).json({ 
-                        error: "터미널 활성화 실패", 
-                        details: error2.message,
-                        stderr: stderr 
+                    
+                    // iTerm2가 없으면 기본 터미널 사용
+                    const fallbackCommand = `open -a Terminal -n`;
+                    exec(fallbackCommand, (error3) => {
+                        if (error3) {
+                            return res.status(500).json({ 
+                                error: "터미널 활성화 실패", 
+                                details: error2.message,
+                                stderr: stderr 
+                            });
+                        }
+                        // 터미널은 열렸지만 tmux attach는 수동으로 해야 함
+                        res.json({ 
+                            success: true, 
+                            agent: agent,
+                            session: sessionName,
+                            info: agentInfo,
+                            note: `터미널이 열렸습니다. 'tmux attach -t ${sessionName}' 명령을 직접 입력해주세요.`
+                        });
                     });
+                    return;
                 }
                 
                 console.log("AppleScript executed successfully");

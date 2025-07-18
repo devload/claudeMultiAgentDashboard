@@ -52,6 +52,38 @@
     .chat-message:hover {
       transform: translateX(2px);
     }
+    
+    /* 링크 스타일 */
+    #chatArea a {
+      text-decoration: none;
+      border-bottom: 1px dotted;
+    }
+    
+    #chatArea a:hover {
+      text-decoration: none;
+      border-bottom: 1px solid;
+    }
+    
+    /* 코드 블록 스타일 */
+    #chatArea pre {
+      margin: 0.5rem 0;
+      padding: 0.75rem;
+      border-radius: 0.375rem;
+      font-size: 0.85rem;
+      overflow-x: auto;
+    }
+    
+    /* 인라인 코드 스타일 */
+    #chatArea code {
+      padding: 0.125rem 0.25rem;
+      border-radius: 0.25rem;
+      font-size: 0.9em;
+    }
+    
+    /* 에이전트 이름 강조 */
+    #chatArea strong.text-primary {
+      font-weight: 600;
+    }
   </style>
 </head>
 <body class="bg-light">
@@ -59,7 +91,12 @@
   <div class="row h-100">
     <!-- 메인 채팅 영역 (왼쪽) -->
     <div class="col-md-8 d-flex flex-column p-3">
-      <h3 class="mb-3">💬 에이전트 통신 콘솔</h3>
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3 class="mb-0">💬 에이전트 통신 콘솔</h3>
+        <a href="https://console.anthropic.com/usage" target="_blank" class="btn btn-sm btn-outline-secondary" title="Claude API 사용량 확인">
+          <span style="font-size: 0.9rem;">📊 사용량</span>
+        </a>
+      </div>
       
       <!-- 채팅 메시지 영역 -->
       <div id="chatArea" class="flex-grow-1 bg-white rounded shadow-sm p-3 mb-3" style="overflow-y: auto; max-height: calc(100vh - 200px); background: linear-gradient(to bottom, #f8f9fa, #ffffff);">
@@ -68,13 +105,37 @@
         </div>
       </div>
       
+      <style>
+        .paired-message {
+          display: flex;
+          align-items: start;
+          gap: 20px;
+          margin-bottom: 20px;
+        }
+        .paired-message .sender {
+          flex: 1;
+          text-align: right;
+        }
+        .paired-message .arrow {
+          color: #6c757d;
+          font-size: 1.5rem;
+          align-self: center;
+        }
+        .paired-message .receiver {
+          flex: 1;
+          text-align: left;
+        }
+      </style>
+      
       <!-- 명령 입력 영역 -->
       <div class="bg-white rounded shadow-sm p-3">
-        <div class="input-group">
+        <div class="d-flex align-items-end gap-2">
           <select id="agentSelector" class="form-select" style="max-width: 150px;">
             <!-- 동적으로 로드됨 -->
           </select>
-          <input type="text" id="commandInput" class="form-control" placeholder="명령을 입력하세요..." onkeypress="handleKeyPress(event)">
+          <div class="flex-grow-1">
+            <textarea id="commandInput" class="form-control" placeholder="명령을 입력하세요... (Shift+Enter로 줄바꿈, Enter로 전송)" rows="3" style="resize: vertical; min-height: 38px;" onkeydown="handleKeyPress(event)"></textarea>
+          </div>
           <button class="btn btn-primary" onclick="sendCommand()">📤 전송</button>
         </div>
       </div>
@@ -109,27 +170,43 @@
 
 <script>
   let agents = []; // 동적으로 로드
-  const ws = new WebSocket("ws://localhost:3000");
+  let ws = null;
   const commandHistories = {}; // 각 에이전트의 명령어 히스토리
+  const messageQueue = {}; // 발신 메시지를 저장할 큐
   const chatMessages = []; // 전체 채팅 메시지
-
-  ws.onopen = async () => {
-    console.log("✅ WebSocket 연결됨");
-    // 에이전트 목록 먼저 로드
-    await loadAgentList();
-    // 로드된 에이전트들에 대해 구독
-    for (const agent of agents) {
-      ws.send(JSON.stringify({ type: "subscribe", agent: agent.name }));
-      commandHistories[agent.name] = [];
+  
+  // WebSocket 연결 초기화
+  function initWebSocket() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.close();
     }
-  };
+    
+    ws = new WebSocket("ws://localhost:3000");
 
-  ws.onclose = () => {
-    console.log("❌ WebSocket 연결 끊김");
-    setTimeout(() => location.reload(), 3000); // 3초 후 재연결
-  };
+    ws.onopen = async () => {
+      console.log("✅ WebSocket 연결됨");
+      // 에이전트 목록 먼저 로드
+      await loadAgentList();
+      // 에이전트 UI 로드
+      await loadAgents();
+      // 로드된 에이전트들에 대해 구독
+      for (const agent of agents) {
+        ws.send(JSON.stringify({ type: "subscribe", agent: agent.name }));
+        commandHistories[agent.name] = [];
+      }
+    };
 
-  ws.onmessage = (event) => {
+    ws.onclose = () => {
+      console.log("❌ WebSocket 연결 끊김");
+      // 재연결 시도
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.CLOSED) {
+          initWebSocket();
+        }
+      }, 3000);
+    };
+
+    ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     if (data.type === "log" && data.agent) {
@@ -142,10 +219,32 @@
       
       // 파싱된 데이터가 있으면 각각 표시
       if (logData) {
-        // 요청은 이미 .todo 파일 감지에서 표시되므로 스킵
-        // 응답만 표시
+        // 응답이 있을 때 페어 메시지 업데이트 시도
         if (logData.response) {
-          addChatMessage('response', data.agent, logData.response, logData.endTime);
+          // 해당하는 페어 메시지가 있는지 확인하고 업데이트
+          const pairedMessages = document.querySelectorAll('.paired-message');
+          let updated = false;
+          
+          for (const msg of pairedMessages) {
+            const receiverBadge = msg.querySelector('.receiver .badge');
+            if (receiverBadge && receiverBadge.textContent === data.agent) {
+              // 수신 부분 업데이트
+              const receiverContent = msg.querySelector('.receiver .bg-light');
+              if (receiverContent && receiverContent.textContent.includes('응답 처리 중...')) {
+                receiverContent.innerHTML = `
+                  <small class="d-block text-muted mb-1" style="font-size: 0.7rem;">${logData.endTime || new Date().toLocaleTimeString()}</small>
+                  <div class="mb-0" style="font-size: 0.8rem; font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; color: #212529;">${formatMessage(logData.response)}</div>
+                `;
+                updated = true;
+                break;
+              }
+            }
+          }
+          
+          // 페어 메시지가 없으면 일반 응답으로 표시
+          if (!updated) {
+            addChatMessage('response', data.agent, logData.response, logData.endTime);
+          }
         }
       } else {
         // 파싱 실패시 처리
@@ -177,14 +276,19 @@
       // 채팅 영역에 명령 추가
       const latestCommand = data.history[0]?.command || data.command;
       
-      // 발신자 정보 파싱 (📥 builder → commander: 명령)
-      const senderMatch = latestCommand.match(/📥\s*(\w+)\s*→\s*(\w+):\s*(.+)/);
-      if (senderMatch) {
-        const sender = senderMatch[1];
-        const target = senderMatch[2];
-        const actualCommand = senderMatch[3];
-        // 발신자 관점에서 표시
-        addChatMessage('command', sender, `${target}에게 ${actualCommand}`);
+      // [From: XX] 패턴 파싱
+      const fromMatch = latestCommand.match(/\[From:\s*([^\]]+)\]\s*(.+)/);
+      if (fromMatch) {
+        const sender = fromMatch[1];
+        const actualCommand = fromMatch[2];
+        
+        // 발신자가 user가 아닌 경우 페어 메시지로 표시
+        if (sender !== 'user') {
+          addPairedMessage(sender, data.agent, actualCommand, data.timestamp);
+        } else {
+          // user가 보낸 명령은 일반 명령으로 표시
+          addChatMessage('command', 'user', actualCommand);
+        }
       } else {
         addChatMessage('command', data.agent, latestCommand);
       }
@@ -217,6 +321,7 @@
       }
     }
   };
+  } // initWebSocket 함수 종료
 
   function addChatMessage(type, agent, content, customTime) {
     const chatArea = document.getElementById('chatArea');
@@ -236,8 +341,8 @@
     if (type === 'command') {
       msgDiv.innerHTML = `
         <div class="d-inline-block bg-primary text-white rounded-3 px-3 py-2 shadow-sm" style="max-width: 70%; border-radius: 18px 18px 4px 18px;">
-          <small class="d-block opacity-75 mb-1" style="font-size: 0.75rem;">${time}</small>
-          <div style="font-size: 0.95rem; line-height: 1.4;">${escapeHtml(content)}</div>
+          <small class="d-block opacity-75 mb-1" style="font-size: 0.7rem;">${time}</small>
+          <div style="font-size: 0.85rem; line-height: 1.4;">${formatMessage(content)}</div>
         </div>
         <div class="mt-1">${agentBadge}</div>
       `;
@@ -245,8 +350,8 @@
       msgDiv.innerHTML = `
         <div class="mb-1">${agentBadge}</div>
         <div class="d-inline-block bg-light rounded-3 px-3 py-2 shadow-sm border" style="max-width: 70%; border-radius: 18px 18px 18px 4px;">
-          <small class="d-block text-muted mb-1" style="font-size: 0.75rem;">${time}</small>
-          <pre class="mb-0" style="white-space: pre-wrap; font-size: 0.9rem; font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; color: #212529;">${escapeHtml(content)}</pre>
+          <small class="d-block text-muted mb-1" style="font-size: 0.7rem;">${time}</small>
+          <div class="mb-0" style="font-size: 0.8rem; font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; color: #212529;">${formatMessage(content)}</div>
         </div>
       `;
     }
@@ -326,6 +431,73 @@
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+  
+  function formatMessage(text) {
+    // URL을 하이퍼링크로 변환
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    let formatted = escapeHtml(text).replace(urlRegex, '<a href="$1" target="_blank" class="text-primary">$1</a>');
+    
+    // 파일 경로를 하이라이트 (예: ~/Documents/shared/reports/team-report.md)
+    const pathRegex = /(~?\/[\w\-\.\/]+)/g;
+    formatted = formatted.replace(pathRegex, '<code class="text-info">$1</code>');
+    
+    // 코드 블록 처리 (백틱 3개)
+    formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre class="bg-dark text-light">$1</pre>');
+    
+    // 인라인 코드 처리 (백틱 1개)
+    formatted = formatted.replace(/`([^`]+)`/g, '<code class="bg-light text-dark">$1</code>');
+    
+    // 에이전트 이름 강조
+    const agents = ['노티미', '남짱', '이쁘니', '테스터'];
+    agents.forEach(agent => {
+      const regex = new RegExp(`\\b${agent}\\b`, 'g');
+      formatted = formatted.replace(regex, `<strong class="text-primary">${agent}</strong>`);
+    });
+    
+    return formatted;
+  }
+  
+  function addPairedMessage(sender, receiver, content, timestamp) {
+    const chatArea = document.getElementById('chatArea');
+    
+    // 초기 안내 메시지 제거
+    const placeholder = chatArea.querySelector('.text-center.text-muted');
+    if (placeholder) {
+      placeholder.remove();
+    }
+    
+    const time = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+    
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'paired-message animate-in';
+    msgDiv.innerHTML = `
+      <div class="sender">
+        <div class="mb-1">
+          <span class="badge ${getAgentColor(sender)}">${sender}</span>
+        </div>
+        <div class="d-inline-block bg-primary text-white rounded-3 px-3 py-2 shadow-sm" style="border-radius: 18px 18px 4px 18px;">
+          <small class="d-block opacity-75 mb-1" style="font-size: 0.7rem;">${time}</small>
+          <div style="font-size: 0.85rem; line-height: 1.4;">${formatMessage(content)}</div>
+        </div>
+      </div>
+      
+      <div class="arrow">→</div>
+      
+      <div class="receiver">
+        <div class="mb-1">
+          <span class="badge ${getAgentColor(receiver)}">${receiver}</span>
+        </div>
+        <div class="bg-light rounded-3 px-3 py-2 shadow-sm border" style="border-radius: 4px 18px 18px 18px;">
+          <small class="d-block text-muted mb-1" style="font-size: 0.7rem;">수신 대기 중...</small>
+          <div style="font-size: 0.8rem; color: #6c757d;">응답 처리 중...</div>
+        </div>
+      </div>
+    `;
+    
+    msgDiv.setAttribute('data-pair-id', `${sender}-${receiver}-${Date.now()}`);
+    chatArea.appendChild(msgDiv);
+    chatArea.scrollTop = chatArea.scrollHeight;
   }
   
   function parseAgentLog(content) {
@@ -493,11 +665,22 @@
     return icons[agent] || '🤖';
   }
 
+  let isSending = false; // 중복 전송 방지 플래그
+  
   async function sendCommand() {
+    if (isSending) return; // 이미 전송 중이면 무시
+    
     const agent = document.getElementById('agentSelector').value;
     const prompt = document.getElementById('commandInput').value;
     
     if (!prompt.trim()) return;
+    
+    isSending = true; // 전송 시작
+    console.log(`📤 명령 전송 시작: agent=${agent}, prompt=${prompt}`);
+    
+    // 입력창의 높이를 초기화
+    const textarea = document.getElementById('commandInput');
+    textarea.style.height = '38px';
     
     // 다른 에이전트에게 보내는 명령은 그대로 전달
     // builder가 "commander에게 X" 라고 하면 builder의 명령으로 처리
@@ -509,29 +692,37 @@
       body: JSON.stringify({ agent, prompt })
     });
 
-    if (res.ok) {
-      document.getElementById('commandInput').value = "";
-      // 상태 배지 업데이트
-      const statusBadge = document.getElementById(`status-${agent}`);
-      if (statusBadge) {
-        const originalText = statusBadge.textContent;
-        const originalClass = statusBadge.className;
-        
-        statusBadge.textContent = "📤 전송됨";
-        statusBadge.className = "badge bg-info text-white";
-        
-        setTimeout(() => {
-          if (statusBadge.textContent === "📤 전송됨") {
-            statusBadge.textContent = originalText;
-            statusBadge.className = originalClass;
-          }
-        }, 2000);
+    try {
+      if (res.ok) {
+        document.getElementById('commandInput').value = "";
+        // 상태 배지 업데이트
+        const statusBadge = document.getElementById(`status-${agent}`);
+        if (statusBadge) {
+          const originalText = statusBadge.textContent;
+          const originalClass = statusBadge.className;
+          
+          statusBadge.textContent = "📤 전송됨";
+          statusBadge.className = "badge bg-info text-white";
+          
+          setTimeout(() => {
+            if (statusBadge.textContent === "📤 전송됨") {
+              statusBadge.textContent = originalText;
+              statusBadge.className = originalClass;
+            }
+          }, 2000);
+        }
       }
+    } finally {
+      // 전송 완료 후 플래그 해제 (약간의 지연 후)
+      setTimeout(() => {
+        isSending = false;
+      }, 500);
     }
   }
 
   function handleKeyPress(event) {
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
       sendCommand();
     }
   }
@@ -612,9 +803,16 @@
     }
   }
 
-  // 에이전트 목록 로드 후 UI 초기화
-  loadAgentList().then(() => {
-    loadAgents();
+  // 페이지 로드 시 초기화
+  window.addEventListener('load', () => {
+    initWebSocket();
+  });
+  
+  // 페이지 언로드 시 WebSocket 정리
+  window.addEventListener('beforeunload', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    }
   });
 </script>
 </body>

@@ -9,7 +9,7 @@ const app = require("./app");
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const LOGS_DIR = path.join(__dirname, "logs");
+const LOGS_DIR = "/Users/devload/claueAI/logs";
 const TASKS_DIR = path.join(__dirname, "tasks");
 const COMMANDS_DIR = path.join(__dirname, "commands");
 const clients = {}; // agent별 연결된 클라이언트 목록
@@ -20,15 +20,23 @@ fs.mkdirSync(COMMANDS_DIR, { recursive: true });
 
 // WebSocket 연결 관리
 wss.on("connection", (ws) => {
-    let agent = null;
+    let subscribedAgents = []; // 이 연결이 구독한 에이전트 목록
 
     ws.on("message", (msg) => {
         try {
             const data = JSON.parse(msg);
             if (data.type === "subscribe" && data.agent) {
-                agent = data.agent;
+                const agent = data.agent;
+                
+                // 이미 구독했으면 중복 구독 방지
+                if (subscribedAgents.includes(agent)) {
+                    console.log(`🔄 이미 구독 중: ${agent}`);
+                    return;
+                }
+                
                 if (!clients[agent]) clients[agent] = [];
                 clients[agent].push(ws);
+                subscribedAgents.push(agent);
                 console.log(`🔔 WebSocket 구독: ${agent}, 총 연결수: ${clients[agent].length}`);
             }
         } catch (e) {
@@ -37,8 +45,12 @@ wss.on("connection", (ws) => {
     });
 
     ws.on("close", () => {
-        if (agent && clients[agent]) {
-            clients[agent] = clients[agent].filter((c) => c !== ws);
+        // 모든 구독한 에이전트에서 연결 제거
+        for (const agent of subscribedAgents) {
+            if (clients[agent]) {
+                clients[agent] = clients[agent].filter((c) => c !== ws);
+                console.log(`🔌 WebSocket 연결 해제: ${agent}, 남은 연결수: ${clients[agent].length}`);
+            }
         }
     });
 });
@@ -279,7 +291,8 @@ chokidar.watch(TASKS_DIR, {
         broadcastTodoStatus(agent, false); // ✅ 완료됨
     });
 
-// 백업: 5초마다 수동으로 로그 파일 체크
+// 백업: 5초마다 수동으로 로그 파일 체크 - 비활성화 (chokidar가 이미 처리)
+/*
 setInterval(() => {
     fs.readdir(LOGS_DIR, (err, files) => {
         if (err) return;
@@ -312,6 +325,7 @@ setInterval(() => {
         });
     });
 }, 5000);
+*/
 
 // Redis 초기화 및 Pub/Sub 설정
 (async () => {

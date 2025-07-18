@@ -34,8 +34,8 @@ router.post("/", async (req, res) => {
         const config = await loadAgentConfig(agent);
         const ROOT_DIR = config.root_dir || "/Users/rohsunghyun/claudeAuto";
         
-        // 발신자 정보가 있으면 명령어에 포함
-        const finalPrompt = sender ? `[From: ${sender}] ${prompt}` : prompt;
+        // 발신자 정보를 항상 포함 (없으면 'user'로 표시)
+        const finalPrompt = `[From: ${sender || 'user'}] ${prompt}`;
         
         // Redis 사용 여부 확인
         if (utils.isConnected()) {
