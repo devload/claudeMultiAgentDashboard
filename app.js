@@ -16,6 +16,8 @@ app.use("/api/config", require("./routes/config"));
 app.use("/api/status", require("./routes/status"));
 app.use("/api/terminal", require("./routes/terminal"));
 app.use("/api/agents", require("./routes/agents"));
+app.use("/api/reports", require("./routes/reports"));
+app.use("/api/agent-change", require("./routes/agent-change"));
 app.use("/logs", require("./routes/logs"));
 
 module.exports = app;

@@ -95,9 +95,28 @@ function broadcastCommand(agent, command) {
     }
 }
 
+// 에이전트 상태 변경 알림 (추가/제거)
+function broadcastAgentChange(action, agentName) {
+    console.log(`📢 broadcastAgentChange 호출: action=${action}, agent=${agentName}`);
+    
+    // 모든 연결된 클라이언트에게 알림
+    for (const [agent, conns] of Object.entries(clients)) {
+        for (const ws of conns) {
+            if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ 
+                    type: "agentChange", 
+                    action, // 'added' or 'removed'
+                    agentName 
+                }));
+            }
+        }
+    }
+}
+
 // broadcast 함수들을 전역으로 내보내기
 global.broadcastCommand = broadcastCommand;
 global.broadcastLog = broadcastLog;
+global.broadcastAgentChange = broadcastAgentChange;
 
 // 각 에이전트별 마지막 로그 내용 추적
 const lastLogContents = {};
