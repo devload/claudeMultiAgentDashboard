@@ -22,6 +22,23 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   exit 1
 fi
 
+# Redis에 에이전트 정보 등록
+REDIS_CLI="$(dirname "$AGENT_DIR")/utils/redis-cli.sh"
+if [[ -f "$REDIS_CLI" ]]; then
+  # agent.json에서 추가 정보 읽기
+  ROLE=$(jq -r '.role // "unknown"' "$AGENT_DIR/agent.json")
+  
+  # Redis에 에이전트 정보 저장
+  "$REDIS_CLI" HSET "agent:$NAME:info" \
+    "name" "$NAME" \
+    "role" "$ROLE" \
+    "status" "active" \
+    "started" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "session" "$SESSION_NAME" > /dev/null
+  
+  echo "📝 Redis에 에이전트 정보 등록됨"
+fi
+
 # 새 tmux 세션 시작
 echo "🚀 tmux 세션 시작: $SESSION_NAME"
 tmux new-session -d -s "$SESSION_NAME" "$AGENT_DIR/agent-loop.sh"

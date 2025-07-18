@@ -1,20 +1,19 @@
 const express = require("express");
 const { exec } = require("child_process");
-const fs = require("fs");
-const path = require("path");
 const router = express.Router();
+const redis = require("../utils/redis");
 
 // 특정 에이전트의 터미널 활성화
-router.post("/activate/:agent", (req, res) => {
+router.post("/activate/:agent", async (req, res) => {
     const agent = req.params.agent;
-    const registryFile = path.join(__dirname, "..", "registry", `${agent}.json`);
-    
-    if (!fs.existsSync(registryFile)) {
-        return res.status(404).json({ error: "에이전트를 찾을 수 없습니다" });
-    }
     
     try {
-        const agentInfo = JSON.parse(fs.readFileSync(registryFile, "utf-8"));
+        // Redis에서 에이전트 정보 조회
+        const agentInfo = await redis.hgetall(`agent:${agent}:info`);
+        
+        if (!agentInfo || !agentInfo.name) {
+            return res.status(404).json({ error: "에이전트를 찾을 수 없습니다" });
+        }
         
         // tmux 세션 확인 및 iTerm2에서 열기
         const sessionName = `agent-${agent}`;
@@ -29,23 +28,23 @@ router.post("/activate/:agent", (req, res) => {
                 });
             }
             
-            // AppleScript로 iTerm2에서 tmux 세션 열기
-            const script = `
-                tell application "iTerm2"
-                    activate
-                    create window with default profile
-                    tell current session of current window
-                        write text "tmux attach -t ${sessionName}"
-                    end tell
-                end tell
-            `;
+            // open 명령어로 새 터미널 창 열기 (더 간단한 방법)
+            const command = `open -a iTerm2 -n --args -e "tmux attach -t ${sessionName}"`;
+            
+            console.log("Executing command for terminal activation:", command);
         
-            exec(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, (error2, stdout, stderr) => {
+            exec(command, (error2, stdout, stderr) => {
                 if (error2) {
                     console.error("터미널 활성화 실패:", error2);
-                    return res.status(500).json({ error: "터미널 활성화 실패" });
+                    console.error("stderr:", stderr);
+                    return res.status(500).json({ 
+                        error: "터미널 활성화 실패", 
+                        details: error2.message,
+                        stderr: stderr 
+                    });
                 }
                 
+                console.log("AppleScript executed successfully");
                 res.json({ 
                     success: true, 
                     agent: agent,
@@ -61,20 +60,20 @@ router.post("/activate/:agent", (req, res) => {
 });
 
 // 모든 에이전트의 터미널 정보 조회
-router.get("/info", (req, res) => {
+router.get("/info", async (req, res) => {
     const agents = ["builder", "commander", "tester"];
     const terminalInfo = {};
     
-    agents.forEach(agent => {
-        const registryFile = path.join(__dirname, "..", "registry", `${agent}.json`);
-        if (fs.existsSync(registryFile)) {
-            try {
-                terminalInfo[agent] = JSON.parse(fs.readFileSync(registryFile, "utf-8"));
-            } catch (e) {
-                terminalInfo[agent] = { error: "정보 로드 실패" };
+    for (const agent of agents) {
+        try {
+            const agentData = await redis.hgetall(`agent:${agent}:info`);
+            if (agentData && agentData.name) {
+                terminalInfo[agent] = agentData;
             }
+        } catch (e) {
+            terminalInfo[agent] = { error: "정보 로드 실패" };
         }
-    });
+    }
     
     res.json(terminalInfo);
 });

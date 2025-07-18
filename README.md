@@ -13,6 +13,7 @@
 - 🔄 **에이전트 간 통신**: 에이전트들이 서로 작업을 요청하고 협업
 - 📊 **실시간 로그 스트리밍**: WebSocket을 통한 실시간 로그 확인
 - 🖥️ **터미널 통합**: iTerm2와 tmux를 통한 터미널 세션 관리
+- 🚀 **Redis 통합**: 고성능 메시지 큐 및 Pub/Sub 통신
 
 ## 🚀 시작하기
 
@@ -22,6 +23,8 @@
 - [Claude CLI](https://claude.ai/code) 설치 및 설정
 - macOS (iTerm2 통합 기능 사용 시)
 - tmux (지속적인 에이전트 세션 관리용)
+- Docker (Redis 실행용)
+- jq (JSON 파싱용)
 
 ### 설치
 
@@ -33,60 +36,94 @@ cd claudeAuto
 
 2. 의존성 설치
 ```bash
+cd claudeMultiAgentDashboard
 npm install
 ```
 
-3. 에이전트 설정
+3. Redis 실행 (Docker Compose 사용)
 ```bash
-# 각 에이전트 폴더에 agent.json 생성
-cp agent/agent.json.example /path/to/your/agent/folder/agent.json
-# agent.json을 수정하여 에이전트 정보 설정
+docker compose up -d
+```
+
+4. 에이전트 설정
+```bash
+# 예시: agent1, agent2 디렉토리 생성
+mkdir -p ~/Documents/agent1 ~/Documents/agent2
+
+# 에이전트 파일 복사
+cp -r agent ~/Documents/agent1/
+cp -r agent ~/Documents/agent2/
+
+# 각 에이전트의 agent.json 수정
+# ~/Documents/agent1/agent/agent.json:
+# {
+#   "name": "남짱",
+#   "role": "프론트",
+#   "project_path": "/Users/username/Documents/agent1",
+#   "root_dir": "/Users/username/claueAI"
+# }
 ```
 
 ### 실행
 
-1. 서버 시작
+1. Redis 확인
 ```bash
+# Redis 상태 확인
+docker ps | grep redis
+
+# Redis Commander (웹 UI) 접속
+http://localhost:8081
+```
+
+2. 서버 시작
+```bash
+cd claudeMultiAgentDashboard
 npm start
 ```
 
-2. 웹 브라우저에서 접속
+3. 웹 브라우저에서 접속
 ```
 http://localhost:3000
 ```
 
-3. 에이전트 시작 (각 에이전트 폴더에서)
+4. 에이전트 시작 (각 에이전트 폴더에서)
 ```bash
-./agent/start-agent-tmux.sh
+cd ~/Documents/agent1/agent
+./start-agent-tmux.sh
+
+cd ~/Documents/agent2/agent
+./start-agent-tmux.sh
 ```
 
 ## 📁 프로젝트 구조
 
 ```
-claudeAuto/
-├── server.js           # WebSocket 서버 및 파일 감시
+claudeMultiAgentDashboard/
+├── server.js           # WebSocket 서버 및 Redis 통합
 ├── app.js             # Express 애플리케이션 설정
 ├── bin/
 │   └── www            # 서버 시작 스크립트
 ├── public/
 │   └── index.html     # 웹 대시보드 UI
 ├── routes/
-│   ├── command.js     # 명령 전송 API
-│   ├── config.js      # 에이전트 설정 API
-│   ├── status.js      # 상태 확인 API
+│   ├── command.js     # 명령 전송 API (Redis LIST)
+│   ├── config.js      # 에이전트 설정 API (Redis HASH)
+│   ├── status.js      # 상태 확인 API (Redis)
 │   ├── terminal.js    # 터미널 활성화 API
-│   ├── agents.js      # 에이전트 목록 API
+│   ├── agents.js      # 에이전트 목록 API (Redis)
 │   └── logs.js        # 로그 파일 서빙
+├── utils/
+│   ├── redis.js       # Redis 클라이언트 및 유틸리티
+│   ├── redis-cli.sh   # Shell 스크립트용 Redis CLI 래퍼
+│   └── ws.js          # WebSocket 유틸리티
 ├── agent/
-│   ├── agent-loop.sh          # 에이전트 실행 루프
-│   ├── start-agent-tmux.sh    # tmux 세션 시작
-│   ├── send-to-agent.sh       # 에이전트 간 통신
+│   ├── agent-loop.sh          # 에이전트 실행 루프 (Redis BRPOP)
+│   ├── start-agent-tmux.sh    # tmux 세션 시작 및 Redis 등록
 │   ├── rule.md                # 에이전트 동작 규칙
 │   └── agent.json.example     # 에이전트 설정 예시
-├── tasks/             # 에이전트 작업 큐 (.todo 파일)
+├── docker-compose.yml  # Redis 및 Redis Commander 설정
 ├── logs/              # 에이전트 실행 로그
-├── registry/          # 등록된 에이전트 정보
-└── commands/          # 명령 히스토리
+└── commands/          # 명령 히스토리 (폴백용)
 ```
 
 ## 🔧 에이전트 설정
@@ -106,6 +143,27 @@ claudeAuto/
 
 각 에이전트는 `rule.md` 파일을 통해 동작 규칙을 정의합니다. 이 파일은 에이전트가 다른 에이전트와 통신하는 방법을 안내합니다.
 
+예시 (남짱 에이전트):
+```markdown
+# 에이전트 통신 규칙
+
+당신은 '남짱' 에이전트입니다.
+
+## 다른 에이전트와 통신하기
+
+다른 에이전트에게 명령을 전달하려면 다음 형식으로 명령하세요:
+
+```bash
+curl -X POST http://localhost:3000/api/command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "이쁘니",
+    "prompt": "전달할 명령",
+    "sender": "남짱"
+  }'
+```
+```
+
 ## 💻 사용법
 
 ### 웹 대시보드에서 명령 전송
@@ -116,9 +174,13 @@ claudeAuto/
 
 ### 에이전트 간 통신
 
-Builder에서 Commander로 명령 전달 예시:
+에이전트 간 양방향 통신 예시:
 ```
-commander에게 현재 디렉토리의 파일 목록을 보여달라고 해
+# 남짱 → 이쁘니
+남짱: "이쁘니에게 현재 디렉토리의 파일 목록을 보여달라고 해"
+
+# 이쁘니가 작업 수행 후 자동으로 남짱에게 응답
+이쁘니: "[From: 남짱] 요청하신 파일 목록입니다: ..."
 ```
 
 ### tmux 세션 관리
@@ -133,6 +195,23 @@ tmux attach -t agent-builder
 # 세션 종료
 tmux kill-session -t agent-builder
 ```
+
+## 🔧 Redis 아키텍처
+
+### 사용되는 Redis 키 구조
+
+- `agent:{name}:info` - 에이전트 정보 (HASH)
+- `tasks:{name}` - 작업 큐 (LIST)
+- `logs:{name}` - 로그 스트림 (STREAM) - 예정
+- `history:commands` - 명령어 히스토리 (SORTED SET)
+- `channel:*` - Pub/Sub 채널
+
+### Pub/Sub 채널
+
+- `channel:tasks` - 작업 추가 알림
+- `channel:logs` - 로그 추가 알림
+- `channel:status` - 상태 업데이트 알림
+- `agent:{name}:status` - 에이전트별 상태 채널
 
 ## 🛡️ 보안 주의사항
 
@@ -154,6 +233,29 @@ tmux kill-session -t agent-builder
 
 - [Claude AI](https://claude.ai) by Anthropic
 - 모든 오픈소스 기여자들
+
+## 🔍 문제 해결
+
+### Redis 연결 문제
+```bash
+# Redis 상태 확인
+docker ps | grep redis
+
+# Redis CLI로 직접 확인
+docker exec claude-redis redis-cli ping
+```
+
+### 에이전트가 작업을 받지 못할 때
+```bash
+# Redis에서 작업 큐 확인
+docker exec claude-redis redis-cli LRANGE "tasks:에이전트이름" 0 -1
+
+# 에이전트 정보 확인
+docker exec claude-redis redis-cli HGETALL "agent:에이전트이름:info"
+```
+
+### 터미널 활성화가 안 될 때
+- 시스템 설정 > 개인정보 보호 및 보안 > 자동화에서 Node.js/터미널이 iTerm2를 제어할 수 있도록 허용
 
 ---
 

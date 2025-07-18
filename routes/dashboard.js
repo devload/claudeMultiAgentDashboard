@@ -1,30 +1,41 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const router = express.Router();
+const redis = require('../utils/redis');
 
-const REGISTRY_DIR = path.join(__dirname, '../registry');
-const LOGS_DIR = path.join(__dirname, '../logs');
-
-if (!fs.existsSync(REGISTRY_DIR)) fs.mkdirSync(REGISTRY_DIR);
-if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR);
-
-router.get('/agents', (req, res) => {
-    const agents = [];
-    const files = fs.readdirSync(REGISTRY_DIR);
-    files.forEach((file) => {
-        const json = fs.readFileSync(path.join(REGISTRY_DIR, file));
-        agents.push(JSON.parse(json));
-    });
-    res.json(agents);
+router.get('/agents', async (req, res) => {
+    try {
+        const agentKeys = await redis.keys('agent:*:info');
+        const agents = [];
+        
+        for (const key of agentKeys) {
+            const agentData = await redis.hgetall(key);
+            if (agentData && agentData.name) {
+                agents.push(agentData);
+            }
+        }
+        
+        res.json(agents);
+    } catch (err) {
+        console.error('Error fetching agents:', err);
+        res.status(500).json({ error: 'Failed to fetch agents' });
+    }
 });
 
-router.get('/logs/:agent', (req, res) => {
-    const files = fs.readdirSync(LOGS_DIR).filter(f => f.startsWith(req.params.agent));
-    if (files.length === 0) return res.status(404).send('No logs');
-    const latest = files.sort().reverse()[0];
-    const content = fs.readFileSync(path.join(LOGS_DIR, latest), 'utf-8');
-    res.type('text/plain').send(content);
+router.get('/logs/:agent', async (req, res) => {
+    try {
+        const agent = req.params.agent;
+        // Redis에서 최근 로그 조회 (나중에 STREAM으로 마이그레이션 예정)
+        const logs = await redis.lrange(`logs:${agent}`, -100, -1); // 최근 100개 로그
+        
+        if (!logs || logs.length === 0) {
+            return res.status(404).send('No logs');
+        }
+        
+        res.type('text/plain').send(logs.join('\n'));
+    } catch (err) {
+        console.error('Error fetching logs:', err);
+        res.status(500).json({ error: 'Failed to fetch logs' });
+    }
 });
 
 module.exports = router; // ← 이거 꼭 있어야 함!

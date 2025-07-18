@@ -3,6 +3,7 @@ const WebSocket = require("ws");
 const chokidar = require("chokidar");
 const fs = require("fs");
 const path = require("path");
+const { initRedis, pubsub, taskQueue, logStream, agentStatus, utils } = require('./utils/redis');
 
 const app = require("./app");
 const server = http.createServer(app);
@@ -292,6 +293,72 @@ setInterval(() => {
         });
     });
 }, 5000);
+
+// Redis 초기화 및 Pub/Sub 설정
+(async () => {
+    const redisConnected = await initRedis();
+    
+    if (redisConnected) {
+        console.log('🚀 Redis 모드로 실행중');
+        
+        // Redis Pub/Sub 구독
+        await pubsub.subscribe(['channel:tasks', 'channel:logs', 'channel:status'], (channel, data) => {
+            console.log(`📡 Redis 이벤트 수신 - 채널: ${channel}`);
+            
+            switch (channel) {
+                case 'channel:tasks':
+                    if (data.type === 'task_added') {
+                        // 작업 추가 알림
+                        broadcastTodoStatus(data.agent, true);
+                        broadcastCommand(data.agent, data.task);
+                    } else if (data.type === 'task_completed') {
+                        // 작업 완료 알림
+                        broadcastTodoStatus(data.agent, false);
+                    }
+                    break;
+                    
+                case 'channel:logs':
+                    if (data.type === 'log_added') {
+                        // 로그 추가 알림
+                        broadcastLog(data.agent, data.message);
+                    }
+                    break;
+                    
+                case 'channel:status':
+                    if (data.type === 'status_update') {
+                        // 상태 업데이트 처리 (필요시)
+                        console.log(`상태 업데이트: ${data.agent} - ${data.status}`);
+                    }
+                    break;
+            }
+        });
+        
+        // Redis 로그 스트림 폴링 (실시간 로그용)
+        setInterval(async () => {
+            const agents = await taskQueue.list('builder').then(() => ['builder', 'commander']);
+            
+            for (const agent of agents) {
+                const lastLogId = global.lastLogIds?.[agent] || '0';
+                const newLogs = await logStream.readSince(agent, lastLogId);
+                
+                if (newLogs.length > 0) {
+                    const lastLog = newLogs[newLogs.length - 1];
+                    if (!global.lastLogIds) global.lastLogIds = {};
+                    global.lastLogIds[agent] = lastLog.id;
+                    
+                    // 새 로그들을 브로드캐스트
+                    const content = newLogs.map(log => log.message).join('\n');
+                    if (content.trim()) {
+                        broadcastLog(agent, content);
+                    }
+                }
+            }
+        }, 1000); // 1초마다 체크
+        
+    } else {
+        console.log('📁 파일 시스템 모드로 실행중');
+    }
+})();
 
 // 서버 모듈 내보내기 (bin/www에서 실행)
 module.exports = server;

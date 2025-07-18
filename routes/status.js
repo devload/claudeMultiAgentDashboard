@@ -1,41 +1,56 @@
-const fs = require("fs");
-const path = require("path");
 const express = require("express");
 const router = express.Router();
-
-const TASKS_DIR = path.join(__dirname, "..", "tasks");
-const REGISTRY_DIR = path.join(__dirname, "..", "registry");
+const redis = require("../utils/redis");
 
 // 모든 에이전트의 상태 확인
-router.get("/", (req, res) => {
+router.get("/", async (req, res) => {
     const agents = ["builder", "commander", "tester"];
     const statuses = {};
     
-    agents.forEach(agent => {
-        const todoFile = path.join(TASKS_DIR, `${agent}.todo`);
-        const registryFile = path.join(REGISTRY_DIR, `${agent}.json`);
-        
-        statuses[agent] = {
-            hasTodo: fs.existsSync(todoFile),
-            isRegistered: fs.existsSync(registryFile)
-        };
-    });
+    for (const agent of agents) {
+        try {
+            // Redis에서 태스크와 등록 상태 확인
+            const [taskExists, agentInfo] = await Promise.all([
+                redis.exists(`agent:${agent}:tasks`),
+                redis.hgetall(`agent:${agent}:info`)
+            ]);
+            
+            statuses[agent] = {
+                hasTodo: taskExists === 1,
+                isRegistered: agentInfo && agentInfo.name ? true : false
+            };
+        } catch (e) {
+            console.error(`Error checking status for ${agent}:`, e);
+            statuses[agent] = {
+                hasTodo: false,
+                isRegistered: false
+            };
+        }
+    }
     
     res.json(statuses);
 });
 
 // 특정 에이전트의 상태 확인
-router.get("/:agent", (req, res) => {
+router.get("/:agent", async (req, res) => {
     const agent = req.params.agent;
-    const todoFile = path.join(TASKS_DIR, `${agent}.todo`);
-    const registryFile = path.join(REGISTRY_DIR, `${agent}.json`);
     
-    res.json({
-        agent,
-        hasTodo: fs.existsSync(todoFile),
-        isRegistered: fs.existsSync(registryFile),
-        timestamp: new Date().toISOString()
-    });
+    try {
+        const [taskExists, agentInfo] = await Promise.all([
+            redis.exists(`agent:${agent}:tasks`),
+            redis.hgetall(`agent:${agent}:info`)
+        ]);
+        
+        res.json({
+            agent,
+            hasTodo: taskExists === 1,
+            isRegistered: agentInfo && agentInfo.name ? true : false,
+            timestamp: new Date().toISOString()
+        });
+    } catch (e) {
+        console.error(`Error checking status for ${agent}:`, e);
+        res.status(500).json({ error: "상태 확인 실패" });
+    }
 });
 
 module.exports = router;

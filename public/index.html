@@ -511,15 +511,22 @@
 
   async function activateTerminal(agent) {
     try {
+      console.log(`터미널 활성화 시도: ${agent}`);
       const res = await fetch(`/api/terminal/activate/${agent}`, {
         method: 'POST'
       });
       
       if (!res.ok) {
-        console.error('터미널 활성화 실패');
+        const errorText = await res.text();
+        console.error('터미널 활성화 실패:', res.status, errorText);
+        alert(`터미널 활성화 실패: ${errorText}`);
+      } else {
+        const result = await res.json();
+        console.log('터미널 활성화 성공:', result);
       }
     } catch (err) {
       console.error('터미널 활성화 오류:', err);
+      alert(`터미널 활성화 오류: ${err.message}`);
     }
   }
 

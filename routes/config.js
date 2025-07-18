@@ -1,33 +1,54 @@
-const fs = require("fs");
-const path = require("path");
 const express = require("express");
 const router = express.Router();
 const { broadcastLog } = require("../utils/ws");
+const redis = require("../utils/redis");
 
-const ROOT_DIR = "/Users/rohsunghyun/claudeAuto";
-
-function getAgentConfigPath(agentName) {
-    return path.join(ROOT_DIR, "registry", `${agentName}.json`);
-}
-
-router.get("/:agent", (req, res) => {
-    const filePath = getAgentConfigPath(req.params.agent);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "설정 없음" });
-
+router.get("/:agent", async (req, res) => {
+    const agent = req.params.agent;
+    
     try {
-        const json = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        res.json(json);
+        // Redis에서 에이전트 설정 조회
+        const config = await redis.hgetall(`agent:${agent}:config`);
+        
+        if (!config || Object.keys(config).length === 0) {
+            return res.status(404).json({ error: "설정 없음" });
+        }
+        
+        // 숫자 타입 변환 처리
+        const parsedConfig = {};
+        for (const [key, value] of Object.entries(config)) {
+            try {
+                parsedConfig[key] = JSON.parse(value);
+            } catch {
+                parsedConfig[key] = value;
+            }
+        }
+        
+        res.json(parsedConfig);
     } catch (e) {
-        res.status(500).json({ error: `⚠️ JSON 파싱 실패: ${e.message}` });
+        res.status(500).json({ error: `⚠️ 설정 조회 실패: ${e.message}` });
     }
 });
 
-router.post("/:agent", (req, res) => {
-    const filePath = getAgentConfigPath(req.params.agent);
+router.post("/:agent", async (req, res) => {
+    const agent = req.params.agent;
 
     try {
-        fs.writeFileSync(filePath, JSON.stringify(req.body, null, 2), "utf-8");
-        broadcastLog(req.params.agent, `🛠️ 설정 변경됨 (${req.params.agent})`);
+        // Redis에 설정 저장
+        const config = req.body;
+        const configToStore = {};
+        
+        // 각 필드를 문자열로 변환하여 저장
+        for (const [key, value] of Object.entries(config)) {
+            configToStore[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+        }
+        
+        await redis.hmset(`agent:${agent}:config`, configToStore);
+        
+        // 변경 사항 방송
+        broadcastLog(agent, `🛠️ 설정 변경됨 (${agent})`);
+        await redis.publish('config:changes', JSON.stringify({ agent, config }));
+        
         res.json({ message: "✅ 설정 저장 완료" });
     } catch (e) {
         res.status(500).json({ error: `⚠️ 저장 실패: ${e.message}` });
