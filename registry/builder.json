@@ -1,0 +1,9 @@
+{
+  "name": "builder",
+  "role": "lib-build",
+  "status": "online",
+  "started": "2025-07-18T20:49:01+09:00",
+  "pid": 13756,
+  "tty": "/dev/ttys009",
+  "hostname": "Rohui-MacBookPro.local"
+}

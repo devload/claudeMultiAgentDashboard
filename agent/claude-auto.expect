@@ -1,0 +1,19 @@
+#!/usr/bin/expect -f
+# Claude 자동 응답 스크립트
+
+set prompt [lindex $argv 0]
+set timeout 30
+
+spawn claude
+expect ">"
+send "$prompt\r"
+
+# 권한 요청 시 자동으로 yes 응답
+expect {
+    "*Allow*" { send "yes\r"; exp_continue }
+    "*허용*" { send "yes\r"; exp_continue }
+    "*permission*" { send "yes\r"; exp_continue }
+    eof
+}
+
+wait

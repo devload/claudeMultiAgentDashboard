@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Claude Agent Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</head>
+<body class="bg-light">
+<div class="container-fluid h-100">
+  <div class="row h-100">
+    <!-- 메인 채팅 영역 (왼쪽) -->
+    <div class="col-md-8 d-flex flex-column p-3">
+      <h3 class="mb-3">💬 에이전트 통신 콘솔</h3>
+      
+      <!-- 채팅 메시지 영역 -->
+      <div id="chatArea" class="flex-grow-1 bg-white rounded shadow-sm p-3 mb-3" style="overflow-y: auto; max-height: calc(100vh - 200px);">
+        <div class="text-center text-muted my-5">
+          <p>에이전트를 선택하고 명령을 입력하세요</p>
+        </div>
+      </div>
+      
+      <!-- 명령 입력 영역 -->
+      <div class="bg-white rounded shadow-sm p-3">
+        <div class="input-group">
+          <select id="agentSelector" class="form-select" style="max-width: 150px;">
+            <!-- 동적으로 로드됨 -->
+          </select>
+          <input type="text" id="commandInput" class="form-control" placeholder="명령을 입력하세요..." onkeypress="handleKeyPress(event)">
+          <button class="btn btn-primary" onclick="sendCommand()">📤 전송</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 에이전트 상태 사이드바 (오른쪽) -->
+    <div class="col-md-4 bg-white border-start p-3" style="overflow-y: auto;">
+      <h4 class="mb-3">📊 에이전트 상태</h4>
+      <div id="agentArea"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 설정 Modal -->
+<div class="modal fade" id="configModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="configModalLabel">설정</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <textarea id="configTextarea" class="form-control" rows="10"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">닫기</button>
+        <button class="btn btn-primary" id="saveConfigBtn">저장</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let agents = []; // 동적으로 로드
+  const ws = new WebSocket("ws://localhost:3000");
+  const commandHistories = {}; // 각 에이전트의 명령어 히스토리
+  const chatMessages = []; // 전체 채팅 메시지
+
+  ws.onopen = async () => {
+    console.log("✅ WebSocket 연결됨");
+    // 에이전트 목록 먼저 로드
+    await loadAgentList();
+    // 로드된 에이전트들에 대해 구독
+    for (const agent of agents) {
+      ws.send(JSON.stringify({ type: "subscribe", agent: agent.name }));
+      commandHistories[agent.name] = [];
+    }
+  };
+
+  ws.onclose = () => {
+    console.log("❌ WebSocket 연결 끊김");
+    setTimeout(() => location.reload(), 3000); // 3초 후 재연결
+  };
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.type === "log" && data.agent) {
+      console.log(`📩 로그 수신: agent=${data.agent}, 내용길이=${data.content.length}`);
+      
+      // 로그 파싱
+      const logData = parseAgentLog(data.content);
+      console.log('파싱된 로그 데이터:', logData);
+      console.log('원본 로그:', data.content);
+      
+      // 파싱된 데이터가 있으면 각각 표시
+      if (logData) {
+        // 요청은 이미 .todo 파일 감지에서 표시되므로 스킵
+        // 응답만 표시
+        if (logData.response) {
+          addChatMessage('response', data.agent, logData.response, logData.endTime);
+        }
+      } else {
+        // 파싱 실패시 처리
+        // 단순한 구분자나 빈 내용은 무시
+        const trimmedContent = data.content.trim();
+        if (trimmedContent && !trimmedContent.match(/^=+$/)) {
+          // 실제 내용이 있을 때만 표시
+          addChatMessage('response', data.agent, data.content);
+        }
+      }
+      
+      // 사이드바 미니 로그 업데이트
+      const miniLog = document.getElementById(`mini-log-${data.agent}`);
+      if (miniLog) {
+        const currentTime = new Date().toLocaleTimeString();
+        miniLog.textContent += `[${currentTime}] ${data.content}\n`;
+        miniLog.scrollTop = miniLog.scrollHeight;
+      }
+    }
+
+    if (data.type === "command" && data.agent) {
+      console.log(`📥 명령 수신: agent=${data.agent}, command=${data.command}`);
+      
+      // 명령어 히스토리 업데이트
+      if (data.history) {
+        commandHistories[data.agent] = data.history;
+      }
+      
+      // 채팅 영역에 명령 추가
+      const latestCommand = data.history[0]?.command || data.command;
+      
+      // 발신자 정보 파싱 (📥 builder → commander: 명령)
+      const senderMatch = latestCommand.match(/📥\s*(\w+)\s*→\s*(\w+):\s*(.+)/);
+      if (senderMatch) {
+        const sender = senderMatch[1];
+        const target = senderMatch[2];
+        const actualCommand = senderMatch[3];
+        // 발신자 관점에서 표시
+        addChatMessage('command', sender, `${target}에게 ${actualCommand}`);
+      } else {
+        addChatMessage('command', data.agent, latestCommand);
+      }
+      
+      // 사이드바 최근 명령 업데이트
+      const recentCmd = document.getElementById(`recent-cmd-${data.agent}`);
+      if (recentCmd) {
+        // 발신자 정보 제거하고 실제 명령만 표시
+        let displayCommand = latestCommand;
+        const senderMatch = latestCommand.match(/📥\s*\w+\s*→\s*\w+:\s*(.+)/);
+        if (senderMatch) {
+          displayCommand = senderMatch[1];
+        }
+        recentCmd.textContent = displayCommand;
+      }
+      
+      // 실행 중 상태 표시
+      const statusBadge = document.getElementById(`status-${data.agent}`);
+      if (statusBadge) {
+        statusBadge.textContent = "⚡ 실행 중";
+        statusBadge.className = "badge bg-primary";
+      }
+    }
+
+    if (data.type === "todo" && data.agent) {
+      const statusBadge = document.getElementById(`status-${data.agent}`);
+      if (statusBadge) {
+        statusBadge.textContent = data.pending ? "🟡 대기 중" : "✅ 완료";
+        statusBadge.className = data.pending ? "badge bg-warning text-dark" : "badge bg-success";
+      }
+    }
+  };
+
+  function addChatMessage(type, agent, content, customTime) {
+    const chatArea = document.getElementById('chatArea');
+    
+    // 초기 안내 메시지 제거
+    const placeholder = chatArea.querySelector('.text-center.text-muted');
+    if (placeholder) {
+      placeholder.remove();
+    }
+    
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `mb-3 ${type === 'command' ? 'text-end' : 'text-start'}`;
+    
+    const time = customTime || new Date().toLocaleTimeString();
+    const agentBadge = `<span class="badge ${getAgentColor(agent)} me-2">${agent}</span>`;
+    
+    if (type === 'command') {
+      msgDiv.innerHTML = `
+        <div class="d-inline-block bg-primary text-white rounded p-2" style="max-width: 70%;">
+          <small class="d-block opacity-75">${time}</small>
+          ${escapeHtml(content)}
+        </div>
+        ${agentBadge}
+      `;
+    } else {
+      msgDiv.innerHTML = `
+        ${agentBadge}
+        <div class="d-inline-block bg-light rounded p-2" style="max-width: 70%;">
+          <small class="d-block text-muted">${time}</small>
+          <pre class="mb-0" style="white-space: pre-wrap;">${escapeHtml(content)}</pre>
+        </div>
+      `;
+    }
+    
+    chatArea.appendChild(msgDiv);
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+
+  function getAgentColor(agent) {
+    const colors = {
+      builder: 'bg-info',
+      commander: 'bg-success',
+      tester: 'bg-warning text-dark'
+    };
+    return colors[agent] || 'bg-secondary';
+  }
+
+  function updateCommandHistory(agent) {
+    const historyEl = document.getElementById(`history-${agent}`);
+    if (!historyEl || !commandHistories[agent]) return;
+    
+    const history = commandHistories[agent].slice(0, 5); // 최근 5개만 표시
+    historyEl.innerHTML = history.map((item, index) => {
+      const time = new Date(item.timestamp).toLocaleString();
+      
+      // 발신자 정보 파싱
+      let displayCommand = item.command;
+      let sender = '';
+      
+      // "📥 builder → commander: 명령" 패턴 파싱
+      const senderMatch = item.command.match(/📥\s*(\w+)\s*→\s*\w+:\s*(.+)/);
+      if (senderMatch) {
+        sender = senderMatch[1];
+        displayCommand = senderMatch[2];
+      }
+      
+      return `<div class="small border-bottom pb-2 mb-2">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1" style="min-width: 0;">
+            <div class="text-muted" style="font-size: 0.75rem;">${time}</div>
+            <div class="d-flex align-items-center mt-1">
+              <button class="btn btn-sm btn-outline-primary me-2" style="padding: 0.1rem 0.3rem; font-size: 0.75rem;" 
+                      onclick="replayCommand('${agent}', '${escapeHtml(displayCommand).replace(/'/g, "\\'")}')">
+                ▶️
+              </button>
+              ${sender ? `<span class="badge bg-secondary me-2" style="font-size: 0.7rem;">[${sender}]</span>` : ''}
+              <div class="text-truncate" style="overflow-x: auto; white-space: nowrap; max-width: 100%;">
+                <code>${escapeHtml(displayCommand)}</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  
+  function replayCommand(agent, command) {
+    const promptEl = document.getElementById(`prompt-${agent}`);
+    if (promptEl) {
+      promptEl.value = command;
+      // 자동으로 전송하지 않고 입력창에만 채워줌
+      promptEl.focus();
+      
+      // 시각적 피드백
+      promptEl.style.backgroundColor = '#e3f2fd';
+      setTimeout(() => {
+        promptEl.style.backgroundColor = '';
+      }, 500);
+    }
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  
+  function parseAgentLog(content) {
+    try {
+      // 실행 시작 시간 추출
+      const startMatch = content.match(/==== Claude 실행 시작: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ====/);
+      const endMatch = content.match(/==== Claude 실행 종료: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ====/);
+      
+      // 입력 프롬프트 추출
+      const requestMatch = content.match(/\[📩 입력 프롬프트\]\s*\n([\s\S]+?)(?=\n\[🧠 Claude 응답\]|\n====)/);
+      
+      // Claude 응답 추출
+      const responseMatch = content.match(/\[🧠 Claude 응답\]\s*\n([\s\S]+?)(?=\n====)/);
+      
+      if (startMatch || endMatch || requestMatch || responseMatch) {
+        return {
+          startTime: startMatch ? new Date(startMatch[1]).toLocaleTimeString() : null,
+          endTime: endMatch ? new Date(endMatch[1]).toLocaleTimeString() : null,
+          request: requestMatch ? requestMatch[1].trim() : null,
+          response: responseMatch ? responseMatch[1].trim() : null
+        };
+      }
+    } catch (e) {
+      console.warn('로그 파싱 실패:', e);
+    }
+    return null;
+  }
+
+  async function loadAgentList() {
+    try {
+      const res = await fetch('/api/agents');
+      if (res.ok) {
+        const agentList = await res.json();
+        agents = agentList;
+        
+        // 에이전트 선택 드롭다운 업데이트
+        const selector = document.getElementById('agentSelector');
+        selector.innerHTML = agents.map(agent => 
+          `<option value="${agent.name}">${getAgentIcon(agent.name)} ${agent.name}</option>`
+        ).join('');
+      }
+    } catch (err) {
+      console.error('에이전트 목록 로드 실패:', err);
+    }
+  }
+
+  async function loadAgents() {
+    const area = document.getElementById('agentArea');
+    area.innerHTML = "";
+    
+    // 초기 상태 로드
+    try {
+      const statusRes = await fetch('/api/status');
+      if (statusRes.ok) {
+        const statuses = await statusRes.json();
+        
+        for (const agent of agents) {
+          const status = statuses[agent.name];
+          const card = document.createElement("div");
+          card.className = "card mb-3";
+          card.innerHTML = `
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="card-title mb-0 text-capitalize">
+                  ${getAgentIcon(agent.name)} ${agent.name}
+                </h5>
+                <div class="d-flex align-items-center gap-1">
+                  <span id="status-${agent.name}" class="badge ${status?.hasTodo ? 'bg-warning text-dark' : 'bg-success'}">
+                    ${status?.hasTodo ? '🟡 대기 중' : '✅ 완료'}
+                  </span>
+                  <button class="btn btn-sm p-1" onclick="editConfig('${agent.name}')" title="설정" style="line-height: 1; background: none; border: none;">
+                    ⚙️
+                  </button>
+                  <button class="btn btn-sm p-1" onclick="activateTerminal('${agent.name}')" title="터미널" style="line-height: 1; background: none; border: none;">
+                    📟
+                  </button>
+                </div>
+              </div>
+              <div class="mb-2">
+                <small class="text-muted">최근 명령</small>
+                <div id="recent-cmd-${agent.name}" class="small text-truncate text-primary">
+                  대기 중...
+                </div>
+              </div>
+              <div>
+                <small class="text-muted">실행 로그</small>
+                <pre id="mini-log-${agent.name}" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 100px; overflow-y: auto; font-size: 0.7rem; line-height: 1.2;">대기 중...</pre>
+              </div>
+            </div>
+          </card>`;
+          area.appendChild(card);
+          loadLog(agent.name); // 초기 로그 로드
+        }
+      }
+    } catch (err) {
+      console.error('상태 로드 실패:', err);
+      // 실패 시 기본 UI
+      for (const agent of agents) {
+        const card = document.createElement("div");
+        card.className = "card mb-3";
+        card.innerHTML = `
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h5 class="card-title mb-0 text-capitalize">
+                ${getAgentIcon(agent.name)} ${agent.name}
+              </h5>
+              <div class="d-flex align-items-center gap-1">
+                <span id="status-${agent.name}" class="badge bg-secondary">
+                  ⏳ 확인 중
+                </span>
+                <button class="btn btn-sm p-1" onclick="editConfig('${agent.name}')" title="설정" style="line-height: 1; background: none; border: none;">
+                  ⚙️
+                </button>
+                <button class="btn btn-sm p-1" onclick="activateTerminal('${agent.name}')" title="터미널" style="line-height: 1; background: none; border: none;">
+                  📟
+                </button>
+              </div>
+            </div>
+            <div class="mb-2">
+              <small class="text-muted">최근 명령</small>
+              <div id="recent-cmd-${agent.name}" class="small text-truncate text-primary">
+                대기 중...
+              </div>
+            </div>
+            <div>
+              <small class="text-muted">실행 로그</small>
+              <pre id="mini-log-${agent.name}" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 100px; overflow-y: auto; font-size: 0.7rem; line-height: 1.2;">대기 중...</pre>
+            </div>
+          </div>
+        </card>`;
+        area.appendChild(card);
+      }
+    }
+  }
+
+  function getAgentIcon(agent) {
+    const icons = {
+      builder: '🔧',
+      commander: '🎯',
+      tester: '🧪'
+    };
+    return icons[agent] || '🤖';
+  }
+
+  async function sendCommand() {
+    const agent = document.getElementById('agentSelector').value;
+    const prompt = document.getElementById('commandInput').value;
+    
+    if (!prompt.trim()) return;
+    
+    // 다른 에이전트에게 보내는 명령은 그대로 전달
+    // builder가 "commander에게 X" 라고 하면 builder의 명령으로 처리
+
+    // 일반 명령
+    const res = await fetch("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent, prompt })
+    });
+
+    if (res.ok) {
+      document.getElementById('commandInput').value = "";
+      // 상태 배지 업데이트
+      const statusBadge = document.getElementById(`status-${agent}`);
+      if (statusBadge) {
+        const originalText = statusBadge.textContent;
+        const originalClass = statusBadge.className;
+        
+        statusBadge.textContent = "📤 전송됨";
+        statusBadge.className = "badge bg-info text-white";
+        
+        setTimeout(() => {
+          if (statusBadge.textContent === "📤 전송됨") {
+            statusBadge.textContent = originalText;
+            statusBadge.className = originalClass;
+          }
+        }, 2000);
+      }
+    }
+  }
+
+  function handleKeyPress(event) {
+    if (event.key === 'Enter') {
+      sendCommand();
+    }
+  }
+
+  async function loadLog(agent) {
+    try {
+      const res = await fetch(`/logs/${agent}-latest.log`);
+      if (res.ok) {
+        const text = await res.text();
+        const miniLog = document.getElementById(`mini-log-${agent}`);
+        if (miniLog && text) {
+          // 최근 20줄만 표시
+          const lines = text.split('\n');
+          const recentLines = lines.slice(-20).join('\n');
+          miniLog.textContent = recentLines || '로그 없음';
+          miniLog.scrollTop = miniLog.scrollHeight;
+        }
+      }
+    } catch (err) {
+      console.warn(`로그 로드 실패 (${agent}):`, err);
+    }
+  }
+
+  async function editConfig(agent) {
+    const res = await fetch(`/api/config/${agent}`);
+    if (!res.ok) return alert("⚠️ 설정 로드 실패");
+
+    const json = await res.json();
+    document.getElementById('configTextarea').value = JSON.stringify(json, null, 2);
+    document.getElementById('configModalLabel').textContent = `${agent} 설정`;
+    document.getElementById('saveConfigBtn').setAttribute('data-agent', agent);
+    const modal = new bootstrap.Modal(document.getElementById('configModal'));
+    modal.show();
+  }
+
+  document.getElementById('saveConfigBtn').onclick = async () => {
+    const agent = document.getElementById('saveConfigBtn').getAttribute('data-agent');
+    try {
+      const parsed = JSON.parse(document.getElementById('configTextarea').value);
+      const res = await fetch(`/api/config/${agent}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(parsed, null, 2)
+      });
+      alert(res.ok ? '✅ 설정 저장 완료' : '❌ 저장 실패');
+      bootstrap.Modal.getInstance(document.getElementById('configModal')).hide();
+    } catch {
+      alert('⚠️ JSON 형식 오류');
+    }
+  };
+
+  async function activateTerminal(agent) {
+    try {
+      const res = await fetch(`/api/terminal/activate/${agent}`, {
+        method: 'POST'
+      });
+      
+      if (!res.ok) {
+        console.error('터미널 활성화 실패');
+      }
+    } catch (err) {
+      console.error('터미널 활성화 오류:', err);
+    }
+  }
+
+  // 에이전트 목록 로드 후 UI 초기화
+  loadAgentList().then(() => {
+    loadAgents();
+  });
+</script>
+</body>
+</html>

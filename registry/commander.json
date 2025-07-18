@@ -1,0 +1,9 @@
+{
+  "name": "commander",
+  "role": "send-command-to-builder",
+  "status": "online",
+  "started": "2025-07-18T20:50:10+09:00",
+  "pid": 13840,
+  "tty": "/dev/ttys010",
+  "hostname": "Rohui-MacBookPro.local"
+}

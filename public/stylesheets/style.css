@@ -1,0 +1,123 @@
+body, html {
+  height: 100%;
+  font: 14px "Lucida Grande", Helvetica, Arial, sans-serif;
+  background-color: #f8f9fa;
+}
+
+.container-fluid {
+  height: 100vh;
+  padding: 0;
+}
+
+.container-fluid > .row {
+  margin: 0;
+}
+
+a {
+  color: #00B7FF;
+}
+
+/* 로그 박스 스타일 개선 */
+pre[id^="log-"] {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* 명령어 히스토리 스타일 */
+div[id^="history-"] {
+  font-size: 0.875rem;
+}
+
+/* 명령어 가로 스크롤 */
+div[id^="history-"] .text-truncate {
+  overflow-x: auto !important;
+  white-space: nowrap !important;
+  text-overflow: initial !important;
+}
+
+div[id^="history-"] .text-truncate::-webkit-scrollbar {
+  height: 4px;
+}
+
+div[id^="history-"] .text-truncate::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+div[id^="history-"] .text-truncate::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 2px;
+}
+
+div[id^="history-"] .text-truncate::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* 재생 버튼 호버 효과 */
+div[id^="history-"] button:hover {
+  background-color: #007bff;
+  color: white;
+  transform: scale(1.1);
+}
+
+/* 채팅 메시지 스타일 */
+#chatArea {
+  background-color: #f5f5f5;
+}
+
+#chatArea pre {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.85rem;
+}
+
+/* 사이드바 카드 스타일 */
+.card {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+}
+
+/* 아이콘 버튼 호버 효과 */
+.card button[title]:hover {
+  opacity: 0.7;
+  transform: scale(1.2);
+  transition: all 0.2s;
+}
+
+/* gap 지원 안하는 브라우저 대응 */
+.d-flex.gap-1 > * + * {
+  margin-left: 0.25rem;
+}
+
+/* 채팅 입력 영역 */
+#commandInput {
+  border-left: none;
+  border-right: none;
+}
+
+#agentSelector {
+  border-right: none;
+}
+
+/* 스크롤바 스타일 */
+pre::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+pre::-webkit-scrollbar-track {
+  background: #2b2b2b;
+}
+
+pre::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+
+pre::-webkit-scrollbar-thumb:hover {
+  background: #777;
+}

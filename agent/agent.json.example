@@ -1,0 +1,6 @@
+{
+  "name": "your-agent-name",
+  "role": "agent-role-description",
+  "project_path": "/path/to/your/project",
+  "root_dir": "/path/to/claudeAuto"
+}
