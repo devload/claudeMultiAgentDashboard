@@ -174,6 +174,8 @@
   const commandHistories = {}; // 각 에이전트의 명령어 히스토리
   const messageQueue = {}; // 발신 메시지를 저장할 큐
   const chatMessages = []; // 전체 채팅 메시지
+  const agentTimers = {}; // 각 에이전트의 타이머 인터벌
+  const logChunks = {}; // 대용량 로그 청크 관리
   
   // WebSocket 연결 초기화
   function initWebSocket() {
@@ -208,6 +210,38 @@
 
     ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
+
+    // 대용량 로그 청크 처리
+    if (data.type === "log-chunk" && data.agent) {
+      console.log(`📦 로그 청크 수신: ${data.chunkIndex + 1}/${data.totalChunks}`);
+      
+      if (!logChunks[data.agent]) {
+        logChunks[data.agent] = {
+          chunks: [],
+          totalChunks: data.totalChunks
+        };
+      }
+      
+      // 청크 저장
+      logChunks[data.agent].chunks[data.chunkIndex] = data.content;
+      
+      // 모든 청크를 받았는지 확인
+      if (data.isFinal) {
+        const fullContent = logChunks[data.agent].chunks.join('');
+        console.log(`✅ 전체 로그 수신 완료: ${fullContent.length}바이트`);
+        
+        // 전체 로그 파싱 및 표시
+        const logData = parseAgentLog(fullContent);
+        if (logData && logData.response) {
+          // 기존 요약 메시지 업데이트
+          updateLastChatMessage(data.agent, logData.response, logData.endTime);
+        }
+        
+        // 청크 데이터 정리
+        delete logChunks[data.agent];
+      }
+      return;
+    }
 
     if (data.type === "log" && data.agent) {
       console.log(`📩 로그 수신: agent=${data.agent}, 내용길이=${data.content.length}`);
@@ -318,6 +352,13 @@
       if (statusBadge) {
         statusBadge.textContent = data.pending ? "🟡 대기 중" : "✅ 완료";
         statusBadge.className = data.pending ? "badge bg-warning text-dark" : "badge bg-success";
+      }
+      
+      // 타이머 시작/중지
+      if (data.pending) {
+        startTimer(data.agent);
+      } else {
+        stopTimer(data.agent);
       }
     }
   };
@@ -581,6 +622,7 @@
               <div class="d-flex justify-content-between align-items-center mb-3">
                 <h5 class="card-title mb-0 text-capitalize">
                   ${getAgentIcon(agent.name)} ${agent.name}
+                  <span id="timer-${agent.name}" class="badge bg-info ms-2" style="display: none;"></span>
                   ${agent.role && agent.role.toLowerCase().includes('pm') ? '<span class="badge bg-danger ms-2">PM</span>' : ''}
                 </h5>
                 <div class="d-flex align-items-center gap-1">
@@ -682,18 +724,21 @@
     const textarea = document.getElementById('commandInput');
     textarea.style.height = '38px';
     
-    // 다른 에이전트에게 보내는 명령은 그대로 전달
-    // builder가 "commander에게 X" 라고 하면 builder의 명령으로 처리
+    // 웹에서 보내는 모든 명령에 ADMIN sender 정보 추가
+    const adminPrompt = `📥 ADMIN → ${agent}: ${prompt}`;
 
     // 일반 명령
     const res = await fetch("/api/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent, prompt })
+      body: JSON.stringify({ agent, prompt: adminPrompt })
     });
 
     try {
       if (res.ok) {
+        // 채팅창에 ADMIN 명령 표시
+        addChatMessage('command', 'ADMIN', `${agent}에게 ${prompt}`);
+        
         document.getElementById('commandInput').value = "";
         // 상태 배지 업데이트
         const statusBadge = document.getElementById(`status-${agent}`);
@@ -800,6 +845,62 @@
     } catch (err) {
       console.error('터미널 활성화 오류:', err);
       alert(`터미널 활성화 오류: ${err.message}`);
+    }
+  }
+
+  // 타이머 관련 함수들
+  function startTimer(agent) {
+    stopTimer(agent); // 기존 타이머 중지
+    
+    const timerElement = document.getElementById(`timer-${agent}`);
+    if (!timerElement) return;
+    
+    const startTime = Date.now();
+    timerElement.style.display = 'inline-block';
+    
+    agentTimers[agent] = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const minutes = Math.floor(elapsed / 60);
+      const seconds = elapsed % 60;
+      timerElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }, 1000);
+  }
+  
+  function stopTimer(agent) {
+    if (agentTimers[agent]) {
+      clearInterval(agentTimers[agent]);
+      delete agentTimers[agent];
+    }
+    
+    const timerElement = document.getElementById(`timer-${agent}`);
+    if (timerElement) {
+      timerElement.style.display = 'none';
+    }
+  }
+
+  // 최근 명령 localStorage 저장
+  function saveRecentCommand(agent, command) {
+    const recentCommands = JSON.parse(localStorage.getItem('recentCommands') || '{}');
+    recentCommands[agent] = { command: command, timestamp: new Date().toISOString() };
+    localStorage.setItem('recentCommands', JSON.stringify(recentCommands));
+  }
+
+  // 마지막 채팅 메시지 업데이트 (청크 처리용)
+  function updateLastChatMessage(agent, content, customTime) {
+    const chatArea = document.getElementById('chatArea');
+    const messages = chatArea.querySelectorAll('.mb-3');
+    
+    // 마지막 메시지를 찾아서 업데이트
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      const badge = msg.querySelector('.badge');
+      if (badge && badge.textContent === agent) {
+        const contentDiv = msg.querySelector('.bg-light .mb-0, .bg-primary .mb-0');
+        if (contentDiv) {
+          contentDiv.innerHTML = formatMessage(content);
+          break;
+        }
+      }
     }
   }
 

@@ -14,6 +14,11 @@ const TASKS_DIR = path.join(__dirname, "tasks");
 const COMMANDS_DIR = path.join(__dirname, "commands");
 const clients = {}; // agent별 연결된 클라이언트 목록
 const commandHistory = {}; // agent별 명령어 히스토리
+const executionStartTime = {}; // agent별 실행 시작 시간
+const logChunks = {}; // 대용량 로그 청크 관리
+
+// 대용량 로그 청크 전송을 위한 설정
+const MAX_CHUNK_SIZE = 64 * 1024; // 64KB
 
 // 명령어 디렉토리 생성
 fs.mkdirSync(COMMANDS_DIR, { recursive: true });
@@ -55,15 +60,54 @@ wss.on("connection", (ws) => {
     });
 });
 
-// 로그 실시간 전송
+// 로그 실시간 전송 (대용량 로그 청크 지원)
 function broadcastLog(agent, content) {
     const conns = clients[agent] || [];
     console.log(`📢 broadcastLog 호출: agent=${agent}, 연결된 클라이언트=${conns.length}, 내용길이=${content.length}`);
     
-    for (const ws of conns) {
-        if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: "log", agent, content }));
-            console.log(`✅ 로그 전송됨: ${agent}`);
+    // 64KB 이상이면 청크로 분할 전송
+    if (content.length > MAX_CHUNK_SIZE) {
+        console.log(`🔄 큰 로그 감지 (${content.length}바이트) - 청크로 분할 전송`);
+        
+        const chunks = [];
+        for (let i = 0; i < content.length; i += MAX_CHUNK_SIZE) {
+            chunks.push(content.slice(i, i + MAX_CHUNK_SIZE));
+        }
+        
+        // 요약 먼저 전송
+        const summary = `📦 대용량 로그 (${(content.length / 1024).toFixed(1)}KB, ${chunks.length}개 청크로 분할 전송)`;
+        for (const ws of conns) {
+            if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ type: "log", agent, content: summary }));
+            }
+        }
+        
+        // 청크 전송
+        chunks.forEach((chunk, index) => {
+            const chunkData = {
+                type: "log-chunk",
+                agent,
+                content: chunk,
+                chunkIndex: index,
+                totalChunks: chunks.length,
+                isFinal: index === chunks.length - 1
+            };
+            
+            for (const ws of conns) {
+                if (ws.readyState === ws.OPEN) {
+                    ws.send(JSON.stringify(chunkData));
+                }
+            }
+        });
+        
+        console.log(`✅ 청크 전송 완료: ${agent} (${chunks.length}개 청크)`);
+    } else {
+        // 일반 크기는 기존 방식으로 전송
+        for (const ws of conns) {
+            if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ type: "log", agent, content }));
+                console.log(`✅ 로그 전송됨: ${agent}`);
+            }
         }
     }
 }
@@ -79,12 +123,15 @@ function broadcastTodoStatus(agent, pending) {
     }
 }
 
-// 명령어 실시간 전송
+// 명령어 실시간 전송 (실행 시간 추적 지원)
 function broadcastCommand(agent, command) {
     const conns = clients[agent] || [];
     const timestamp = new Date().toISOString();
     
     console.log(`📤 broadcastCommand 호출: agent=${agent}, command=${command}, 연결된 클라이언트=${conns.length}`);
+    
+    // 실행 시작 시간 기록
+    executionStartTime[agent] = Date.now();
     
     // 명령어 히스토리에 추가
     if (!commandHistory[agent]) commandHistory[agent] = [];
